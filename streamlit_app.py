@@ -11,6 +11,7 @@ SCALE_BAR_PIXELS = 42
 METRES_PER_PIXEL = 100 / SCALE_BAR_PIXELS
 RHO_AIR = 1.2
 TOLERANCE_PX = 1.5
+PRACTICAL_YIELD_KT = 20.0
 
 
 def build_data(measurement_mode: str) -> pd.DataFrame:
@@ -64,42 +65,43 @@ st.title("Taylor Blast Wave: Top vs Side Radius")
 st.write(
     "Toggle between measuring the fireball radius to the **sides** or to the **top**. "
     "The app updates the best-fit theoretical curve with fixed $t^{2/5}$ scaling and the "
-    "resulting kiloton estimate."
+    "resulting kiloton estimate, then compares that theory-based estimate with the practical "
+    "reference value of 20 kt."
 )
 
-col_left, col_right = st.columns([1, 1.4])
+measurement_mode = st.radio(
+    "Measurement mode",
+    options=["sides", "top"],
+    horizontal=True,
+)
 
-with col_left:
-    measurement_mode = st.radio(
-        "Measurement mode",
-        options=["sides", "top"],
-        horizontal=True,
-    )
+data = build_data(measurement_mode)
+mean_kt = data["E_est_kilotons_TNT"].mean()
+median_kt = data["E_est_kilotons_TNT"].median()
+mae_px = data["abs_error_px"].mean()
+within_tol = int((data["abs_error_px"] <= TOLERANCE_PX).sum())
+mean_delta_kt = mean_kt - PRACTICAL_YIELD_KT
+mean_delta_pct = 100 * mean_delta_kt / PRACTICAL_YIELD_KT
 
-    data = build_data(measurement_mode)
-    mean_kt = data["E_est_kilotons_TNT"].mean()
-    median_kt = data["E_est_kilotons_TNT"].median()
-    mae_px = data["abs_error_px"].mean()
-    within_tol = int((data["abs_error_px"] <= TOLERANCE_PX).sum())
+metric_cols = st.columns(5)
+metric_cols[0].metric("Theory estimate", f"{mean_kt:.2f} kt TNT")
+metric_cols[1].metric("Practical yield", f"{PRACTICAL_YIELD_KT:.2f} kt TNT")
+metric_cols[2].metric("Theory vs practical", f"{mean_delta_kt:+.2f} kt", f"{mean_delta_pct:+.1f}%")
+metric_cols[3].metric("Median estimated yield", f"{median_kt:.2f} kt TNT")
+metric_cols[4].metric("Mean absolute fit error", f"{mae_px:.2f} px")
 
-    st.metric("Mean estimated yield", f"{mean_kt:.2f} kt TNT")
-    st.metric("Median estimated yield", f"{median_kt:.2f} kt TNT")
-    st.metric("Mean absolute fit error", f"{mae_px:.2f} px")
-    st.metric("Points within tolerance", f"{within_tol}/{len(data)}")
+st.metric("Points within tolerance", f"{within_tol}/{len(data)}")
 
-    st.caption(
-        f"Calibration: 100 m = {SCALE_BAR_PIXELS} px, so 1 px = {METRES_PER_PIXEL:.2f} m. "
-        f"Tolerance band = +/- {TOLERANCE_PX:.1f} px."
-    )
+st.caption(
+    f"Calibration: 100 m = {SCALE_BAR_PIXELS} px, so 1 px = {METRES_PER_PIXEL:.2f} m. "
+    f"Tolerance band = +/- {TOLERANCE_PX:.1f} px."
+)
 
-with col_right:
-    try:
-        image = Image.open("blast.png")
-        st.image(image, caption="Explosion contact sheet")
-    except FileNotFoundError:
-        st.warning("Could not find blast.png in the current folder.")
-
-st.pyplot(plot_best_fit(data, measurement_mode))
+st.info(
+    f"Practical comparison uses a reference yield of {PRACTICAL_YIELD_KT:.0f} kt. "
+    f"With the current {measurement_mode} measurements, the theory-based mean estimate is "
+    f"{mean_kt:.2f} kt."
+)
 
 summary = data[
     [
@@ -120,5 +122,18 @@ summary.columns = [
     "estimated_kilotons_TNT",
 ]
 
-st.subheader("Frame-by-frame summary")
-st.dataframe(summary, use_container_width=True)
+tab_graph, tab_image, tab_table = st.tabs(["Graph", "Image", "Summary"])
+
+with tab_graph:
+    st.pyplot(plot_best_fit(data, measurement_mode))
+
+with tab_image:
+    try:
+        image = Image.open("blast.png")
+        st.image(image, caption="Explosion contact sheet")
+    except FileNotFoundError:
+        st.warning("Could not find blast.png in the current folder.")
+
+with tab_table:
+    st.subheader("Frame-by-frame summary")
+    st.dataframe(summary, use_container_width=True)
