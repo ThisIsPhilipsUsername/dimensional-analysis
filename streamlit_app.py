@@ -1,6 +1,7 @@
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+from matplotlib.patches import Arc
 from PIL import Image
 import streamlit as st
 
@@ -12,6 +13,16 @@ METRES_PER_PIXEL = 100 / SCALE_BAR_PIXELS
 RHO_AIR = 1.2
 TOLERANCE_PX = 1.5
 PRACTICAL_YIELD_KT = 20.0
+
+# 191 ms frame calibration (measured from the photograph's own scale bar)
+FRAME_IMAGE      = "191ms.png"
+FRAME_T_MS       = 19.1
+FRAME_SCALE_X0   = 103      # left tick of the 100 m bar in 191ms.png
+FRAME_SCALE_X1   = 178      # right tick
+FRAME_SCALE_Y    = 42       # row of the scale bar line
+FRAME_MPX        = 100 / (FRAME_SCALE_X1 - FRAME_SCALE_X0)   # m / px
+FRAME_CX         = 141.4    # blast centre x (px)
+FRAME_CY         = 196.75   # blast centre y (px)
 
 
 def build_data(measurement_mode: str) -> pd.DataFrame:
@@ -28,10 +39,10 @@ def build_data(measurement_mode: str) -> pd.DataFrame:
     data["radius_px"] = data[radius_col]
     data["radius_m"] = data["radius_px"] * METRES_PER_PIXEL
 
-    # Keep the theoretical scaling fixed at r = k t^(2/5) and fit only k.
     k_fit = np.sum(data["radius_px"] * data["time_ms"] ** 0.4) / np.sum(
         data["time_ms"] ** 0.8
     )
+    data["k_fit"] = k_fit
     data["radius_px_pred"] = k_fit * data["time_ms"] ** 0.4
     data["residual_px"] = data["radius_px"] - data["radius_px_pred"]
     data["abs_error_px"] = np.abs(data["residual_px"])
@@ -61,6 +72,57 @@ def plot_best_fit(data: pd.DataFrame, measurement_mode: str):
     return fig
 
 
+def plot_frame_overlay(radius_m: float, r_theory_m: float) -> plt.Figure:
+    frame = np.array(Image.open(FRAME_IMAGE).convert("RGB"))
+    h, w = frame.shape[:2]
+
+    r_px        = radius_m   / FRAME_MPX
+    r_theory_px = r_theory_m / FRAME_MPX
+
+    fig, ax = plt.subplots(figsize=(6.2, 5.0))
+    ax.imshow(frame)
+
+    # user-chosen radius arc
+    ax.add_patch(Arc(
+        (FRAME_CX, FRAME_CY), 2 * r_px, 2 * r_px,
+        theta1=180, theta2=360, color="tab:orange", linewidth=2.5,
+    ))
+    ax.plot([FRAME_CX, FRAME_CX + r_px], [FRAME_CY, FRAME_CY],
+            color="cyan", ls="--", lw=1.8)
+    ax.plot([FRAME_CX, FRAME_CX], [FRAME_CY, FRAME_CY - r_px],
+            color="cyan", ls="--", lw=1.8)
+
+    # theoretical radius (dotted yellow arc for reference)
+    ax.add_patch(Arc(
+        (FRAME_CX, FRAME_CY), 2 * r_theory_px, 2 * r_theory_px,
+        theta1=180, theta2=360, color="yellow", linewidth=1.5, linestyle="dotted",
+    ))
+
+    # 100 m scale bar overlay
+    ax.plot([FRAME_SCALE_X0, FRAME_SCALE_X1], [FRAME_SCALE_Y, FRAME_SCALE_Y],
+            color="lime", lw=2.5)
+    for x in (FRAME_SCALE_X0, FRAME_SCALE_X1):
+        ax.plot([x, x], [FRAME_SCALE_Y - 5, FRAME_SCALE_Y + 5], color="lime", lw=2.5)
+    ax.text(
+        (FRAME_SCALE_X0 + FRAME_SCALE_X1) / 2, FRAME_SCALE_Y - 7, "100 m",
+        color="lime", fontsize=9, ha="center", va="bottom", fontweight="bold",
+    )
+
+    ax.text(
+        4, 4, f"r = {radius_m:.0f} m",
+        color="white", fontsize=10, va="top",
+        bbox=dict(fc="black", alpha=0.6, ec="none"),
+    )
+
+    ax.set_xlim(0, w)
+    ax.set_ylim(h, 0)
+    ax.axis("off")
+    ax.set_title(f"19.1 ms frame  —  orange: selected  |  yellow dotted: theory ({r_theory_m:.0f} m)")
+    return fig
+
+
+# ── app ──────────────────────────────────────────────────────────────────────
+
 st.title("Taylor Blast Wave: Top vs Side Radius")
 st.write(
     "Toggle between measuring the fireball radius to the **sides** or to the **top**. "
@@ -76,11 +138,15 @@ measurement_mode = st.radio(
 )
 
 data = build_data(measurement_mode)
-mean_kt = data["E_est_kilotons_TNT"].mean()
-median_kt = data["E_est_kilotons_TNT"].median()
-mae_px = data["abs_error_px"].mean()
-within_tol = int((data["abs_error_px"] <= TOLERANCE_PX).sum())
-mean_delta_kt = mean_kt - PRACTICAL_YIELD_KT
+k_fit       = data["k_fit"].iloc[0]
+k_fit_m     = k_fit * METRES_PER_PIXEL                    # m / ms^0.4
+r_theory_m  = k_fit_m * FRAME_T_MS ** 0.4                # theoretical radius at 19.1 ms
+
+mean_kt     = data["E_est_kilotons_TNT"].mean()
+median_kt   = data["E_est_kilotons_TNT"].median()
+mae_px      = data["abs_error_px"].mean()
+within_tol  = int((data["abs_error_px"] <= TOLERANCE_PX).sum())
+mean_delta_kt  = mean_kt - PRACTICAL_YIELD_KT
 mean_delta_pct = 100 * mean_delta_kt / PRACTICAL_YIELD_KT
 
 metric_cols = st.columns(5)
@@ -104,25 +170,16 @@ st.info(
 )
 
 summary = data[
-    [
-        "time_ms",
-        "radius_px",
-        "radius_px_pred",
-        "residual_px",
-        "radius_m",
-        "E_est_kilotons_TNT",
-    ]
+    ["time_ms", "radius_px", "radius_px_pred", "residual_px", "radius_m", "E_est_kilotons_TNT"]
 ].copy()
 summary.columns = [
-    "time_ms",
-    "measured_radius_px",
-    "predicted_radius_px",
-    "residual_px",
-    "measured_radius_m",
-    "estimated_kilotons_TNT",
+    "time_ms", "measured_radius_px", "predicted_radius_px",
+    "residual_px", "measured_radius_m", "estimated_kilotons_TNT",
 ]
 
-tab_graph, tab_image, tab_table = st.tabs(["Graph", "Image", "Summary"])
+tab_graph, tab_image, tab_explorer, tab_table = st.tabs(
+    ["Graph", "Image", "Frame Explorer", "Summary"]
+)
 
 with tab_graph:
     st.pyplot(plot_best_fit(data, measurement_mode))
@@ -133,6 +190,60 @@ with tab_image:
         st.image(image, caption="Explosion contact sheet")
     except FileNotFoundError:
         st.warning("Could not find blast.png in the current folder.")
+
+with tab_explorer:
+    st.subheader("19.1 ms frame — interactive blast radius & energy")
+    st.write(
+        "Drag the slider to resize the blast radius. "
+        "The **yellow dotted arc** shows the theoretical prediction; "
+        "the **orange arc** follows your slider. "
+        "Energy scales as $E \\sim \\rho\\, r^5 / t^2$."
+    )
+
+    radius_m = st.slider(
+        "Blast radius (m)",
+        min_value=50, max_value=300,
+        value=int(round(r_theory_m)),
+        step=1,
+    )
+
+    t_s   = FRAME_T_MS / 1000
+    E_J   = RHO_AIR * radius_m ** 5 / t_s ** 2
+    E_kt  = E_J / 4.184e12
+    E_theory_J  = RHO_AIR * r_theory_m ** 5 / t_s ** 2
+    E_theory_kt = E_theory_J / 4.184e12
+
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Selected radius",   f"{radius_m} m",       f"{radius_m - r_theory_m:+.0f} m vs theory")
+    col2.metric("Estimated energy",  f"{E_kt:.1f} kt TNT",  f"{E_kt - E_theory_kt:+.1f} kt vs theory")
+    col3.metric("Theory energy",     f"{E_theory_kt:.1f} kt TNT")
+
+    # colour-coded energy gauge (green → red)
+    MAX_GAUGE_KT = 120.0
+    frac = min(E_kt / MAX_GAUGE_KT, 1.0)
+    r_val = int(255 * frac)
+    g_val = int(255 * (1 - frac))
+    hex_color = f"#{r_val:02x}{g_val:02x}00"
+    st.markdown(
+        f"""
+        <div style="background:#222;border-radius:6px;padding:4px 8px;margin-bottom:8px">
+          <div style="width:{frac*100:.1f}%;background:{hex_color};
+                      border-radius:4px;padding:4px 0;text-align:center;
+                      color:white;font-weight:bold;font-size:14px;min-width:60px">
+            {E_kt:.1f} kt
+          </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    st.caption(f"Gauge max = {MAX_GAUGE_KT:.0f} kt  |  theory = {E_theory_kt:.1f} kt (yellow dotted arc)")
+
+    try:
+        fig = plot_frame_overlay(radius_m, r_theory_m)
+        st.pyplot(fig)
+        plt.close(fig)
+    except FileNotFoundError:
+        st.warning("Could not find 191ms.png in the current folder.")
 
 with tab_table:
     st.subheader("Frame-by-frame summary")
