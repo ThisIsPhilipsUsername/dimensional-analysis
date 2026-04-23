@@ -240,7 +240,9 @@ with tab_explorer:
 
     try:
         fig = plot_frame_overlay(radius_m, r_theory_m)
-        st.pyplot(fig)
+        col_img, _ = st.columns([1, 1])
+        with col_img:
+            st.pyplot(fig, use_container_width=True)
         plt.close(fig)
     except FileNotFoundError:
         st.warning("Could not find 191ms.png in the current folder.")
